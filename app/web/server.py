@@ -11,6 +11,8 @@ from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
 from app.agent.core import Agent
+from app.config import get_llm
+from app.main import render_event
 
 app = FastAPI(title="Production Incident Agent Demo")
 
@@ -21,7 +23,7 @@ class Query(BaseModel):
 
 @app.post("/api/run")
 def run(q: Query):
-    agent = Agent()
+    agent = Agent(llm=get_llm(), on_event=render_event)
     res = agent.run(q.query)
     return {
         "answer": res.answer,

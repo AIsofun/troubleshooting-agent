@@ -1,0 +1,18 @@
+# Agent Demo 配置文件
+# 修改此处即可，main.py 和 server.py 都从这里读取
+
+llm:
+  # 设为 true 则使用内置规则 MockLLM，无需真实大模型
+  use_mock: false
+
+  # Ollama 或任何 OpenAI-compatible API 的地址
+  #base_url: "http://192.168.5.107:11434/v1"
+  base_url: "http://127.0.0.1:11434/v1"
+  # Ollama 上已下载的模型名，例如 qwen2.5:14b / llama3.1:8b / mistral
+  model: "qwen2.5:14b"
+
+  # Ollama 不校验 api_key，填任意非空字符串即可；接 OpenAI 时填真实 key
+  api_key: "ollama"
+
+  # 0.0 = 确定性输出，适合工具调用场景；调高后输出更多样
+  temperature: 0.0

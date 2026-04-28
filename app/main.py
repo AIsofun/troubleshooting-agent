@@ -12,6 +12,7 @@ from rich.panel import Panel
 from rich.rule import Rule
 
 from app.agent.core import Agent, TraceEvent
+from app.config import get_llm
 
 console = Console()
 
@@ -55,7 +56,7 @@ def render_event(ev: TraceEvent) -> None:
 
 
 def run_once(query: str) -> None:
-    agent = Agent(on_event=render_event)
+    agent = Agent(llm=get_llm(), on_event=render_event)
     result = agent.run(query)
     console.print(Rule("[dim]raw answer (JSON)[/dim]"))
     console.print_json(json.dumps(result.answer, ensure_ascii=False))
