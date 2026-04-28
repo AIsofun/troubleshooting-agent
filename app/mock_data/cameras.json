@@ -1,0 +1,6 @@
+{
+  "cam-01": {"status": "online",  "last_frame_sec": 2,   "fps": 25, "ip": "10.0.0.11"},
+  "cam-02": {"status": "offline", "last_frame_sec": 612, "fps": 0,  "ip": "10.0.0.12"},
+  "cam-03": {"status": "online",  "last_frame_sec": 1,   "fps": 25, "ip": "10.0.0.13"},
+  "cam-04": {"status": "degraded","last_frame_sec": 45,  "fps": 8,  "ip": "10.0.0.14"}
+}

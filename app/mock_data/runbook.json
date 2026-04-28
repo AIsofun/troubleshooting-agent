@@ -1,0 +1,42 @@
+{
+  "camera_offline": {
+    "title": "相机掉线处置流程",
+    "steps": [
+      "1. 确认相机网络可达（ping / 交换机端口）",
+      "2. 检查 RTSP 拉流服务日志，看是否认证失败或链路抖动",
+      "3. 尝试重启 camera-service（低风险）",
+      "4. 如仍失败，派发现场工单检查供电与网线"
+    ],
+    "safe_actions": ["restart_service:camera-service"]
+  },
+  "ocr_quality_drop": {
+    "title": "OCR 识别质量下降处置流程",
+    "steps": [
+      "1. 查看最近输入图像亮度/清晰度是否异常",
+      "2. 检查模型版本是否被切换",
+      "3. 检查上游相机是否有对焦/脏污问题",
+      "4. 必要时回滚到上一稳定模型版本"
+    ],
+    "safe_actions": []
+  },
+  "kafka_backlog": {
+    "title": "Kafka 堆积处置流程",
+    "steps": [
+      "1. 查看消费者实例数与 CPU 是否瓶颈",
+      "2. 查看下游处理延迟是否变高",
+      "3. 临时扩容消费者实例",
+      "4. 关注 rebalance 是否频繁发生"
+    ],
+    "safe_actions": ["restart_service:kafka-consumer"]
+  },
+  "inference_latency_high": {
+    "title": "推理延迟升高处置流程",
+    "steps": [
+      "1. 查看 GPU 利用率与显存占用",
+      "2. 查看请求队列深度 queue_depth",
+      "3. 查看是否有大 batch 请求",
+      "4. 必要时扩容推理副本或切流"
+    ],
+    "safe_actions": []
+  }
+}

@@ -1,0 +1,5 @@
+{
+  "vision.events":   {"lag": 42100, "consumers": 2, "partitions": 6, "rate_msg_s": 350},
+  "ocr.results":     {"lag": 120,   "consumers": 3, "partitions": 6, "rate_msg_s": 900},
+  "audit.trail":     {"lag": 0,     "consumers": 1, "partitions": 3, "rate_msg_s": 50}
+}

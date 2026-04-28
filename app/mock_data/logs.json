@@ -1,0 +1,27 @@
+{
+  "camera-service": [
+    "2026-04-22 09:05:11 INFO  cam-02 connected",
+    "2026-04-22 09:06:02 WARN  cam-02 frame timeout 2s",
+    "2026-04-22 09:06:45 ERROR cam-02 RTSP disconnect: connection reset by peer",
+    "2026-04-22 09:07:00 ERROR cam-02 reconnect failed (1/5)",
+    "2026-04-22 09:09:00 ERROR cam-02 reconnect failed (5/5), giving up"
+  ],
+  "ocr-service": [
+    "2026-04-22 09:00:01 INFO  model=ocr-v3 loaded",
+    "2026-04-22 09:10:02 WARN  confidence_avg dropped to 0.71 (baseline 0.93)",
+    "2026-04-22 09:12:10 WARN  input image brightness low (mean=38)",
+    "2026-04-22 09:14:00 WARN  success_rate=82% (baseline 98%)"
+  ],
+  "inference-gateway": [
+    "2026-04-22 09:00:00 INFO  p50=35ms p99=120ms",
+    "2026-04-22 09:08:00 WARN  p99=480ms queue_depth=42",
+    "2026-04-22 09:09:30 WARN  GPU util=98% mem=22.3/24GB",
+    "2026-04-22 09:11:00 ERROR request timeout after 2000ms"
+  ],
+  "kafka-consumer": [
+    "2026-04-22 09:02:00 INFO  lag=120",
+    "2026-04-22 09:07:00 WARN  lag=15400",
+    "2026-04-22 09:10:00 ERROR consumer rebalance triggered",
+    "2026-04-22 09:12:00 WARN  lag=42100"
+  ]
+}

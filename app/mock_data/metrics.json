@@ -1,0 +1,5 @@
+{
+  "ocr-v3":       {"success_rate": 0.82, "baseline": 0.98, "avg_latency_ms": 110, "p99_latency_ms": 260},
+  "detector-v2":  {"success_rate": 0.97, "baseline": 0.97, "avg_latency_ms": 40,  "p99_latency_ms": 95},
+  "inference-gw": {"success_rate": 0.91, "baseline": 0.99, "avg_latency_ms": 180, "p99_latency_ms": 480}
+}
