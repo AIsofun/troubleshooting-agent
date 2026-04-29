@@ -14,6 +14,72 @@ import re
 from typing import Any, Dict, List, Protocol
 
 
+# ============================================================================
+# 模型无关的通用解析工具
+# ----------------------------------------------------------------------------
+# 不同本地模型在 chat completion 的 content 字段里塞工具调用时，会用各自的
+# 私有标记。如果针对每种模型写一段 if/elif，代码很快就会失控。
+# 这里采用"剥离标签 + 括号配平扫描"的通用策略，使解析层不依赖任何具体模型方言。
+# ============================================================================
+
+# 涵盖以下常见格式（不区分大小写，不区分是否有 `|`、`/` 等修饰）:
+#   <tool_call> ... </tool_call>           qwen2.5
+#   <|tool_call|> ... <|/tool_call|>       一些 chatml 变体
+#   <function_call> ...                    部分自研模型
+#   <think> ... </think>                   含思考标签的模型
+#   [TOOL_CALLS] ... [/TOOL_CALLS]         mistral 系
+#   <|im_start|> / <|im_end|>              chatml 控制 token
+_SPECIAL_TOKEN_RE = re.compile(
+    r"<\s*\|?\s*/?\s*[A-Za-z_][\w\-]*\s*\|?\s*>"   # <tag> </tag> <|tag|> <|/tag|>
+    r"|\[\s*/?[A-Z_][A-Z0-9_]*\s*\]",              # [TOOL_CALLS] [/TOOL_CALLS]
+)
+
+
+def _strip_special_tokens(s: str) -> str:
+    """剥离任意 XML-like 标签和方括号特殊 token，返回清洗后的纯文本。"""
+    if not s:
+        return ""
+    return _SPECIAL_TOKEN_RE.sub(" ", s).strip()
+
+
+def _iter_json_objects(text: str):
+    """
+    在文本中按出现顺序扫描所有"括号配平"的 JSON 对象子串。
+
+    比贪婪正则 `\\{.*\\}` 更可靠：
+      - 能正确处理多个并列对象
+      - 能正确跳过字符串字面量里的大括号
+      - 不会把整段 markdown / 代码块吞掉
+    """
+    if not text:
+        return
+    depth = 0
+    start = -1
+    in_str = False
+    esc = False
+    for i, ch in enumerate(text):
+        if in_str:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                in_str = False
+            continue
+        if ch == '"':
+            in_str = True
+        elif ch == "{":
+            if depth == 0:
+                start = i
+            depth += 1
+        elif ch == "}":
+            if depth > 0:
+                depth -= 1
+                if depth == 0 and start >= 0:
+                    yield text[start : i + 1]
+                    start = -1
+
+
 class LLM(Protocol):
     def plan(self, user_query: str, tools_desc: str,
              observations: List[Dict[str, Any]]) -> Dict[str, Any]: ...
@@ -421,38 +487,30 @@ class OllamaLLM:
         """
         某些本地模型不会用标准的 tool_calls 字段，而是把工具调用 JSON 塞进 content。
         这里尝试识别并还原成 {tool, args} 结构。识别不到返回 None。
+
+        策略（与具体模型无关）：
+          1. 剥离所有 XML-like 标签 / 特殊 token 包装（<tool_call>、<|...|>、
+             [TOOL_CALLS]、<think> 等等，无需逐个枚举模型方言）
+          2. 用括号配平扫描器找出所有合法 JSON 对象（避免贪婪正则切错）
+          3. 逐个尝试解析；若结构形如 {name, arguments} 且 name 在已注册工具集中
+             则认定为工具调用
         """
         if not raw or not raw.strip():
             return None
 
-        from app.tools.registry import TOOLS  # 用注册表校验是否真是已知工具
+        from app.tools.registry import TOOLS
 
-        candidates = []
-        # 直接整体当 JSON
-        candidates.append(raw)
-        # ```json ... ``` 代码块
-        m = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", raw, re.S)
-        if m:
-            candidates.append(m.group(1))
-        # qwen / ollama XML 格式: <tool_call>{"name":...}</tool_call>
-        # 有时 content 前会有乱码/特殊 token，直接搜 <tool_call> 标签
-        m = re.search(r"<tool_call>\s*(\{.*?\})\s*</tool_call>", raw, re.S)
-        if m:
-            candidates.append(m.group(1))
-        # 裸 JSON 对象（兜底，放在 XML 检测之后，范围更大）
-        m = re.search(r"\{.*\}", raw, re.S)
-        if m:
-            candidates.append(m.group(0))
+        cleaned = _strip_special_tokens(raw)
 
-        for c in candidates:
+        for blob in _iter_json_objects(cleaned):
             try:
-                obj = json.loads(c)
+                obj = json.loads(blob)
             except json.JSONDecodeError:
                 continue
             if not isinstance(obj, dict):
                 continue
 
-            # 形态 A: {"name": "...", "arguments": {...}}
+            # 兼容多种字段命名习惯：{name|tool|function, arguments|args|parameters}
             name = obj.get("name") or obj.get("tool") or obj.get("function")
             args = obj.get("arguments") or obj.get("args") or obj.get("parameters")
 
@@ -472,36 +530,40 @@ class OllamaLLM:
     def _parse_final_answer(raw: str) -> Dict[str, Any]:
         """
         尝试从模型回复中提取 JSON。
-        模型有时会在 JSON 前后加说明文字，用正则提取。
+        模型有时会在 JSON 前后加说明文字 / 私有标记 token，这里统一用：
+          1. 剥离 XML-like 标签和特殊 token
+          2. 括号配平扫描器找所有 JSON 对象，逐个尝试
+          3. 都失败则把"清洗后"的纯文本作为 conclusion 兜底（不会再出现 <tool_call> 之类原始标签）
         """
-        # 先尝试直接解析
+        if not raw:
+            raw = ""
+
+        cleaned = _strip_special_tokens(raw)
+
+        # 优先：cleaned 整体直接是 JSON
         try:
-            return json.loads(raw)
+            obj = json.loads(cleaned)
+            if isinstance(obj, dict):
+                return obj
         except json.JSONDecodeError:
             pass
 
-        # 提取 ```json ... ``` 代码块
-        m = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", raw, re.S)
-        if m:
+        # 其次：从 cleaned 中扫描所有合法 JSON 对象，挑第一个看起来像最终答案的
+        for blob in _iter_json_objects(cleaned):
             try:
-                return json.loads(m.group(1))
+                obj = json.loads(blob)
             except json.JSONDecodeError:
-                pass
+                continue
+            if isinstance(obj, dict) and (
+                "conclusion" in obj or "intent" in obj or "suggestions" in obj
+            ):
+                return obj
 
-        # 提取裸 JSON 对象
-        m = re.search(r"\{.*\}", raw, re.S)
-        if m:
-            try:
-                return json.loads(m.group(0))
-            except json.JSONDecodeError:
-                pass
-
-        # 实在解析不了，清洗掉 <tool_call> 残留标签再作为 conclusion 返回
-        # （避免把模型的工具调用语法原样暴露给用户）
-        cleaned = re.sub(r"</?tool_call>", "", raw).strip()
+        # 兜底：把已经清洗过的纯文本作为 conclusion，发挥大模型自由表达能力
+        # （即使没匹配预设 intent，也能把模型的合理回答展示给用户，而不是乱码）
         return {
             "intent": "unknown",
-            "conclusion": cleaned or raw,
+            "conclusion": cleaned or "(模型未返回有效内容)",
             "evidence": [],
             "suggestions": [],
             "safe_actions": [],
