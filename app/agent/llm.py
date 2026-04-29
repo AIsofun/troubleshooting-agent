@@ -434,7 +434,12 @@ class OllamaLLM:
         m = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", raw, re.S)
         if m:
             candidates.append(m.group(1))
-        # 裸 JSON 对象
+        # qwen / ollama XML 格式: <tool_call>{"name":...}</tool_call>
+        # 有时 content 前会有乱码/特殊 token，直接搜 <tool_call> 标签
+        m = re.search(r"<tool_call>\s*(\{.*?\})\s*</tool_call>", raw, re.S)
+        if m:
+            candidates.append(m.group(1))
+        # 裸 JSON 对象（兜底，放在 XML 检测之后，范围更大）
         m = re.search(r"\{.*\}", raw, re.S)
         if m:
             candidates.append(m.group(0))
@@ -491,10 +496,12 @@ class OllamaLLM:
             except json.JSONDecodeError:
                 pass
 
-        # 实在解析不了，把原文作为 conclusion 返回
+        # 实在解析不了，清洗掉 <tool_call> 残留标签再作为 conclusion 返回
+        # （避免把模型的工具调用语法原样暴露给用户）
+        cleaned = re.sub(r"</?tool_call>", "", raw).strip()
         return {
             "intent": "unknown",
-            "conclusion": raw,
+            "conclusion": cleaned or raw,
             "evidence": [],
             "suggestions": [],
             "safe_actions": [],
