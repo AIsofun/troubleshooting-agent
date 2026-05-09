@@ -1,0 +1,166 @@
+# ============================================================
+# Base config — shared across all environments
+# Override via config/dev.yaml or config/prod.yaml
+# All values can be overridden by environment variables.
+# Naming convention: section__key  e.g. LLM__BASE_URL
+# ============================================================
+
+llm:
+  use_mock: false
+  base_url: "http://ollama:11434/v1"
+  model: "qwen2.5:14b"
+  api_key: "ollama"
+  temperature: 0.0
+
+embedding:
+  base_url: "http://ollama:11434/v1"
+  model: "bge-m3"
+  api_key: "ollama"
+  # dimension must match the model; bge-m3 outputs 1024
+  dimension: 1024
+
+qdrant:
+  host: "qdrant"
+  port: 6333
+  collection_knowledge: "knowledge"
+  collection_cases: "cases"
+  collection_traces: "traces"
+
+postgres:
+  dsn: "postgresql+psycopg://agent:agent_dev_pwd@postgres:5432/agentdb"
+
+agent:
+  max_steps: 8
+  # Set to true (or env AGENT_ALLOW_RESTART=1) to allow real service restarts
+  allow_restart: false
+  # Maximum wall-clock seconds for one agent.run()
+  budget_seconds: 120
+  # Maximum tool calls per run
+  budget_tool_calls: 12
+  # ── Phase 7: Verify-Replan ───────────────────────────────
+  # Maximum Verify→Replan cycles (0 = single pass, no replan)
+  max_replan: 2
+  # Set false to skip verification entirely (debug / latency-sensitive)
+  enable_verify: true
+  # AnswerVerifier thresholds
+  verify_pass_threshold: 0.65
+  verify_min_conclusion_len: 20
+  verify_require_numeric: true
+  verify_require_suggestions: false
+
+knowledge:
+  # Local directory where exported case JSONs land (for engineer review / reflow)
+  cases_dir: "./cases"
+  # How many candidate cases to auto-generate per run
+  auto_candidate: true
+  # top-k for vector retrieval before rerank
+  retrieval_top_k: 20
+  # final top-k after rerank
+  rerank_top_k: 5
+
+obs:
+  log_level: "INFO"
+  # "json" for production, "console" for dev
+  log_format: "json"
+  otlp_endpoint: "http://otel-collector:4317"
+  enable_otel: false    # switched on in P9
+
+# ── MCP tool servers (Phase 6) ───────────────────────────────
+# Add remote MCP servers here. The agent can call their tools
+# as if they were local. Leave empty for local-only mode.
+# Example:
+#   mcp:
+#     servers:
+#       - name: camera-server
+#         url: http://192.168.1.100:8080/mcp
+#       - name: plc-server
+#         url: http://192.168.1.101:8080/mcp
+mcp:
+  servers: []
+
+# ── Intent definitions (Phase 5) ────────────────────────────
+# Add new intents here without touching Python code.
+# keywords: Python regex matched against lowercase user query.
+# plan_steps: ordered list of tool calls. extract: dynamic param sources.
+#   Supported extract values: cam_id, alarm_code, user_query
+intents:
+  - name: camera_offline
+    description: "相机/视频流异常（掉线、无图像、帧率下降）"
+    keywords: "(相机|camera|cam-\\d+|掉线|没有图像|无图像)"
+    param_hints: |
+      get_camera_status(camera_id=用户提到的相机, 默认 cam-02)
+      get_recent_logs(service_name='camera-service', limit=5)
+      query_runbook(issue_type='camera_offline')
+    plan_steps:
+      - tool: get_camera_status
+        args: {camera_id: cam-02}
+        extract: {camera_id: cam_id}
+      - tool: get_recent_logs
+        args: {service_name: camera-service, limit: 5}
+      - tool: query_runbook
+        args: {issue_type: camera_offline}
+
+  - name: ocr_quality_drop
+    description: "OCR/识别质量下降（成功率、准确率下降）"
+    keywords: "(ocr|识别|成功率|准确率)"
+    param_hints: |
+      get_model_metrics(model_name='ocr-v3')
+      get_recent_logs(service_name='ocr-service', limit=5)
+      query_runbook(issue_type='ocr_quality_drop')
+    plan_steps:
+      - tool: get_model_metrics
+        args: {model_name: ocr-v3}
+      - tool: get_recent_logs
+        args: {service_name: ocr-service, limit: 5}
+      - tool: query_runbook
+        args: {issue_type: ocr_quality_drop}
+
+  - name: kafka_backlog
+    description: "Kafka 消息堆积（lag 升高、消费能力不足）"
+    keywords: "(kafka|堆积|lag|消费)"
+    param_hints: |
+      get_kafka_backlog(topic='vision.events')
+      get_recent_logs(service_name='kafka-consumer', limit=5)
+      query_runbook(issue_type='kafka_backlog')
+    plan_steps:
+      - tool: get_kafka_backlog
+        args: {topic: vision.events}
+      - tool: get_recent_logs
+        args: {service_name: kafka-consumer, limit: 5}
+      - tool: query_runbook
+        args: {issue_type: kafka_backlog}
+
+  - name: inference_latency_high
+    description: "推理服务延迟升高（p99 超标、GPU 饱和）"
+    keywords: "(推理|inference|延迟|latency|p99|慢)"
+    param_hints: |
+      get_model_metrics(model_name='inference-gw')
+      get_recent_logs(service_name='inference-gateway', limit=5)
+      query_runbook(issue_type='inference_latency_high')
+    plan_steps:
+      - tool: get_model_metrics
+        args: {model_name: inference-gw}
+      - tool: get_recent_logs
+        args: {service_name: inference-gateway, limit: 5}
+      - tool: query_runbook
+        args: {issue_type: inference_latency_high}
+
+  - name: algorithm_false_reject
+    description: "算法误杀率升高（false reject / 过杀）"
+    keywords: "(误杀|false.?reject|过杀|误报|alg_false)"
+    param_hints: |
+      get_model_metrics(model_name='defect-cls')
+      get_recent_logs(service_name='algorithm-service', limit=5)
+      search_knowledge(query=用户问题, alarm_code=报警码)
+      query_runbook(issue_type='algorithm_false_reject')
+    plan_steps:
+      - tool: get_model_metrics
+        args: {model_name: defect-cls}
+      - tool: get_recent_logs
+        args: {service_name: algorithm-service, limit: 5}
+      - tool: search_knowledge
+        args: {query: "算法误杀率升高", top_k: 5}
+        extract: {query: user_query, alarm_code: alarm_code}
+      - tool: query_runbook
+        args: {issue_type: algorithm_false_reject}
+

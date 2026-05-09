@@ -1,0 +1,35 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+*.egg
+
+# Test / coverage
+.pytest_cache/
+htmlcov/
+.coverage
+coverage.xml
+
+# Env secrets — NEVER commit
+.env
+
+# Cases / knowledge reflow — local data, not committed
+cases/pending/*.json
+cases/exported/*.json
+knowledge_packs/
+
+# Docker
+*.tar.gz
+
+# Editor
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db

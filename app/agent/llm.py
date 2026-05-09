@@ -91,87 +91,66 @@ class MockLLM:
     """
     A deterministic 'planner' that fakes an LLM.
     It inspects the user query + previous tool observations and decides
-    the next step. Replace with a real LLM later.
+    the next step.
+
+    Phase 5: intent detection and plan steps are now driven by
+    IntentRegistry (config/base.yaml → intents section) instead of
+    being hardcoded here.  New intents can be added without touching
+    this class.
     """
 
-    # --- intent detection ---
-    @staticmethod
-    def _intent(q: str) -> str:
-        ql = q.lower()
-        if re.search(r"(相机|camera|cam-\d+|掉线|没有图像|无图像)", ql):
-            return "camera_offline"
-        if re.search(r"(ocr|识别|成功率|准确率)", ql):
-            return "ocr_quality_drop"
-        if re.search(r"(kafka|堆积|lag|消费)", ql):
-            return "kafka_backlog"
-        if re.search(r"(推理|inference|延迟|latency|p99|慢)", ql):
-            return "inference_latency_high"
-        return "unknown"
+    def __init__(self, registry=None) -> None:
+        # Allow test injection; otherwise lazy-load global registry
+        self._registry = registry
+        self._planner = None   # lazy-init after registry is set
 
-    @staticmethod
-    def _extract_camera_id(q: str) -> str:
-        m = re.search(r"cam-?(\d+)", q, re.I)
-        if m:
-            return f"cam-{int(m.group(1)):02d}"
-        m = re.search(r"(\d+)\s*号\s*相机", q)
-        if m:
-            return f"cam-{int(m.group(1)):02d}"
-        return "cam-02"  # reasonable default in this demo
+    @property
+    def _get_planner(self):
+        if self._planner is None:
+            from app.agent.planner import ReactPlanner
+            from app.agent.intent import get_intent_registry
+            reg = self._registry or get_intent_registry()
+            self._planner = ReactPlanner(registry=reg)
+        return self._planner
 
     def plan(self, user_query: str, tools_desc: str,
              observations: List[Dict[str, Any]]) -> Dict[str, Any]:
-        intent = self._intent(user_query)
+        from app.agent.intent import get_intent_registry
+        registry = self._registry or get_intent_registry()
+        planner = self._get_planner
+
+        defn = registry.match(user_query)
         done_tools = {o["tool"] for o in observations}
 
-        # Build a small plan per intent. Each step picks ONE tool.
-        if intent == "camera_offline":
-            cam = self._extract_camera_id(user_query)
-            plan_steps = [
-                ("get_camera_status",  {"camera_id": cam}),
-                ("get_recent_logs",    {"service_name": "camera-service", "limit": 5}),
-                ("query_runbook",      {"issue_type": "camera_offline"}),
-            ]
-        elif intent == "ocr_quality_drop":
-            plan_steps = [
-                ("get_model_metrics",  {"model_name": "ocr-v3"}),
-                ("get_recent_logs",    {"service_name": "ocr-service", "limit": 5}),
-                ("query_runbook",      {"issue_type": "ocr_quality_drop"}),
-            ]
-        elif intent == "kafka_backlog":
-            plan_steps = [
-                ("get_kafka_backlog",  {"topic": "vision.events"}),
-                ("get_recent_logs",    {"service_name": "kafka-consumer", "limit": 5}),
-                ("query_runbook",      {"issue_type": "kafka_backlog"}),
-            ]
-        elif intent == "inference_latency_high":
-            plan_steps = [
-                ("get_model_metrics",  {"model_name": "inference-gw"}),
-                ("get_recent_logs",    {"service_name": "inference-gateway", "limit": 5}),
-                ("query_runbook",      {"issue_type": "inference_latency_high"}),
-            ]
-        else:
+        if defn is None:
             return {
                 "action": "final",
                 "answer": {
-                    "conclusion": "无法识别该问题类型，请补充关键词（相机/OCR/Kafka/推理延迟）。",
+                    "conclusion": (
+                        "无法识别该问题类型，请补充关键词。"
+                        f"已知类型：{', '.join(registry.names())}"
+                    ),
                     "evidence": [],
                     "suggestions": [],
-                    "intent": intent,
+                    "intent": "unknown",
                 },
             }
 
-        # pick first step not yet executed
-        for tool, args in plan_steps:
-            if tool not in done_tools:
+        # Pick first step not yet executed
+        for step in defn.plan_steps:
+            if step.tool not in done_tools:
+                args = planner.resolve_step_args(
+                    step.args, step.extract, user_query
+                )
                 return {
                     "action": "tool_call",
-                    "tool": tool,
+                    "tool": step.tool,
                     "args": args,
-                    "thought": f"intent={intent}; need data from {tool}",
+                    "thought": f"intent={defn.name}; need data from {step.tool}",
                 }
 
-        # all steps done -> synthesize a final answer
-        return {"action": "final", "answer": self._synthesize(intent, observations)}
+        # All steps done -> synthesize final answer
+        return {"action": "final", "answer": self._synthesize(defn.name, observations)}
 
     # --- final answer synthesis ---
     @staticmethod
@@ -303,54 +282,11 @@ class OllamaLLM:
         self.temperature = temperature
         self.tool_schemas = _build_tool_schemas()
 
-        # 系统提示：明确角色 + 强制工作流 + 输出格式约束
-        self.system_prompt = (
-            "你是一个工业生产系统的【异常排查 Agent】。\n"
-            "你必须严格遵循 ReAct 风格的 Plan→Act→Observe 循环：每一轮只调用一个工具，"
-            "拿到结果后再决定下一步，直到收集到足够证据，才给出最终结论。\n"
-            "\n"
-            "【核心准则】禁止在没有调用足够工具的情况下直接下结论。\n"
-            "\n"
-            "【强制取证流程】对每一类问题，必须依次完成下面三类取证，缺一不可：\n"
-            "  1) 现状指标：调用对应的 status/metrics/backlog 工具拿到当前数值\n"
-            "  2) 日志佐证：调用 get_recent_logs 获取相关服务的最近日志，作为根因判断依据\n"
-            "  3) 处置依据：调用 query_runbook 获取该问题类型对应的标准处置流程\n"
-            "只有当上述三类工具都已被调用、结果都已观察到，才能给出最终回答。\n"
-            "\n"
-            "【问题类型 intent 枚举】（必须使用其中之一，不要自创）：\n"
-            "  - camera_offline           （相机/视频流异常）\n"
-            "  - ocr_quality_drop         （OCR/识别质量下降）\n"
-            "  - kafka_backlog            （Kafka 消息堆积）\n"
-            "  - inference_latency_high   （推理服务延迟升高）\n"
-            "\n"
-            "【工具→服务名/参数 对照表】（避免你猜错参数）：\n"
-            "  camera_offline:\n"
-            "    get_camera_status(camera_id=用户提到的相机, 默认 cam-02)\n"
-            "    get_recent_logs(service_name='camera-service', limit=5)\n"
-            "    query_runbook(issue_type='camera_offline')\n"
-            "  ocr_quality_drop:\n"
-            "    get_model_metrics(model_name='ocr-v3')\n"
-            "    get_recent_logs(service_name='ocr-service', limit=5)\n"
-            "    query_runbook(issue_type='ocr_quality_drop')\n"
-            "  kafka_backlog:\n"
-            "    get_kafka_backlog(topic='vision.events')\n"
-            "    get_recent_logs(service_name='kafka-consumer', limit=5)\n"
-            "    query_runbook(issue_type='kafka_backlog')\n"
-            "  inference_latency_high:\n"
-            "    get_model_metrics(model_name='inference-gw')\n"
-            "    get_recent_logs(service_name='inference-gateway', limit=5)\n"
-            "    query_runbook(issue_type='inference_latency_high')\n"
-            "\n"
-            "【最终回答输出规范】当三类工具都已调用完毕，请直接输出一个合法 JSON 对象（不要附加任何说明文字、不要用 Markdown 代码块包裹），结构如下：\n"
-            "{\n"
-            '  "intent": "上述枚举之一",\n'
-            '  "conclusion": "用中文给出一段诊断结论，必须引用工具返回的具体数值/日志关键词作为依据",\n'
-            '  "evidence": ["每条形如：工具名: 摘要", ...],\n'
-            '  "suggestions": ["来自 query_runbook 的步骤，逐条列出"],\n'
-            '  "safe_actions": ["来自 runbook 的 safe_actions 字段，是可执行命令而非工具名；若无则空数组"]\n'
-            "}\n"
-            "全部内容必须使用中文。"
-        )
+        # Phase 5: system_prompt is now generated by ReactPlanner from IntentRegistry.
+        # Build it once at construction time (registry is already loaded).
+        from app.agent.planner import ReactPlanner
+        self._planner = ReactPlanner()
+        self.system_prompt = self._planner.system_prompt()
 
     def _build_messages(
         self, user_query: str, observations: List[Dict[str, Any]]
@@ -406,24 +342,9 @@ class OllamaLLM:
         # 软兜底：取证不足时，追加一条 user 提醒，强制模型继续调工具
         # （不是所有模型都会严格遵循 system prompt，再加一道防线）
         called = {o["tool"] for o in observations}
-        required_categories = {
-            "status_or_metrics": {"get_camera_status", "get_model_metrics",
-                                  "get_kafka_backlog", "get_device_heartbeat"},
-            "logs":              {"get_recent_logs"},
-            "runbook":           {"query_runbook"},
-        }
-        missing = [
-            cat for cat, tools in required_categories.items()
-            if not (called & tools)
-        ]
-        if missing:
-            messages.append({
-                "role": "user",
-                "content": (
-                    f"提醒：你还没有完成必要的取证步骤，缺少 {missing}。"
-                    "请继续调用对应工具，不要急于给出最终答案。"
-                ),
-            })
+        reminder = self._planner.reminder_msg(called)
+        if reminder:
+            messages.append({"role": "user", "content": reminder})
 
         try:
             response = self.client.chat.completions.create(

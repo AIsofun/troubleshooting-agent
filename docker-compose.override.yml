@@ -1,0 +1,24 @@
+# docker-compose.override.yml — 开发模式覆盖
+# 自动被 docker compose 合并（无需显式 -f 指定）
+# 生产部署时删除此文件或用 -f docker-compose.yml 显式指定
+
+services:
+  agent-api:
+    build:
+      target: builder   # 使用 builder stage，包含 dev deps
+    # Hot-reload: mount source code directly
+    volumes:
+      - .:/app
+      - ./cases:/app/cases
+    environment:
+      APP_ENV: "dev"
+      OBS__LOG_FORMAT: "console"
+      OBS__LOG_LEVEL: "DEBUG"
+    command:
+      - "uvicorn"
+      - "app.web.server:app"
+      - "--host"
+      - "0.0.0.0"
+      - "--port"
+      - "8000"
+      - "--reload"

@@ -1,0 +1,69 @@
+[build-system]
+requires = ["setuptools>=70", "wheel"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name = "ops-agent"
+version = "0.2.0"
+description = "Production-grade operations assistant Agent"
+requires-python = ">=3.11"
+dependencies = [
+    # Web framework
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "pydantic>=2.9",
+    "pydantic-settings>=2.3",
+    # LLM / embedding
+    "openai>=1.0",
+    # Config / util
+    "pyyaml>=6.0",
+    "rich>=13.8",
+    "python-dotenv>=1.0",
+    # Structured logging
+    "structlog>=24.1",
+    # Vector DB
+    "qdrant-client>=1.9",
+    # Postgres (async + sync)
+    "psycopg[binary]>=3.1",
+    "sqlalchemy[asyncio]>=2.0",
+    "alembic>=1.13",
+    # HTTP client
+    "httpx>=0.27",
+    # OpenTelemetry (placeholder, fully wired in P9)
+    "opentelemetry-api>=1.24",
+    "opentelemetry-sdk>=1.24",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.2",
+    "pytest-asyncio>=0.23",
+    "pytest-cov>=5.0",
+    "ruff>=0.4",
+    "httpx>=0.27",
+]
+# Reranker: install separately if local GPU is available
+rerank = [
+    "FlagEmbedding>=1.2",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+
+# --------------- Ruff ---------------
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W", "B", "C4"]
+ignore = [
+    "E501",   # line too long — handled by formatter
+    "B008",   # do not perform function calls in default args (FastAPI Depends)
+]
+
+# --------------- Pytest ---------------
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+addopts = "-v --tb=short"

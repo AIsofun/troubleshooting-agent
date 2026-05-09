@@ -6,8 +6,8 @@ llm:
   use_mock: false
 
   # Ollama 或任何 OpenAI-compatible API 的地址
-  #base_url: "http://192.168.5.107:11434/v1"
-  base_url: "http://127.0.0.1:11434/v1"
+  base_url: "http://192.168.5.107:11434/v1"
+  #base_url: "http://127.0.0.1:11434/v1"
   # Ollama 上已下载的模型名，例如 qwen2.5:14b / llama3.1:8b / mistral
   model: "qwen2.5:14b"
 

@@ -1,0 +1,24 @@
+# Development overrides — local machine, hot-reload
+# Usage: APP_ENV=dev (set in .env or docker-compose.override.yml)
+
+llm:
+  use_mock: false
+  # Direct access to Ollama on host machine (change to your IP)
+  base_url: "http://host.docker.internal:11434/v1"
+
+embedding:
+  base_url: "http://host.docker.internal:11434/v1"
+
+qdrant:
+  host: "localhost"
+
+postgres:
+  dsn: "postgresql+psycopg://agent:agent_dev_pwd@localhost:5432/agentdb"
+
+agent:
+  max_steps: 8
+
+obs:
+  log_level: "DEBUG"
+  log_format: "console"
+  enable_otel: false

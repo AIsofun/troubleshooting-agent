@@ -12,7 +12,14 @@ from rich.panel import Panel
 from rich.rule import Rule
 
 from app.agent.core import Agent, TraceEvent
-from app.config import get_llm
+from app.config import get_llm, get_settings
+from app.observability.logging import setup_logging
+
+_s = get_settings()
+setup_logging(
+    log_level=_s.get("obs", {}).get("log_level", "INFO"),
+    log_format=_s.get("obs", {}).get("log_format", "console"),
+)
 
 console = Console()
 

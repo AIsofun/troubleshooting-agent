@@ -1,0 +1,13 @@
+# Production overrides
+# All secrets should come from environment variables, not this file.
+# APP_ENV=prod
+
+obs:
+  log_level: "INFO"
+  log_format: "json"
+  enable_otel: true
+
+agent:
+  allow_restart: false
+  budget_seconds: 180
+  budget_tool_calls: 15

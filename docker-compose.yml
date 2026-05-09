@@ -1,0 +1,224 @@
+# ============================================================
+# docker-compose.yml — 运维助手 Agent 完整服务编排
+#
+# Profile 说明：
+#   core  — 必选：agent-api + ollama + qdrant + postgres
+#   obs   — 可选：prometheus + loki + grafana + otel-collector
+#
+# 一键拉起：
+#   核心服务：  docker compose --profile core up -d
+#   含可观测：  docker compose --profile core --profile obs up -d
+#   或使用脚本：scripts/up.ps1 / scripts/up.sh
+# ============================================================
+
+services:
+
+  # ────────────────── Agent API ──────────────────
+  agent-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: runtime
+    image: ops-agent:latest
+    profiles: ["core"]
+    container_name: agent-api
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      APP_ENV: "${APP_ENV:-prod}"
+      LLM__BASE_URL: "${LLM__BASE_URL:-http://ollama:11434/v1}"
+      LLM__MODEL: "${LLM__MODEL:-qwen2.5:14b}"
+      LLM__API_KEY: "${LLM__API_KEY:-ollama}"
+      EMBEDDING__BASE_URL: "${EMBEDDING__BASE_URL:-http://ollama:11434/v1}"
+      QDRANT__HOST: "qdrant"
+      POSTGRES__DSN: "postgresql+psycopg://agent:${POSTGRES_PASSWORD:-agent_dev_pwd}@postgres:5432/agentdb"
+      OBS__LOG_FORMAT: "${OBS__LOG_FORMAT:-json}"
+      OBS__LOG_LEVEL: "${OBS__LOG_LEVEL:-INFO}"
+    volumes:
+      # Knowledge reflow: cases written here are accessible on host
+      - ./cases:/app/cases
+      # Config directory (read-only at runtime)
+      - ./config:/app/config:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+    networks:
+      - agent-net
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      start_period: 15s
+      retries: 3
+
+  # ────────────────── Ollama (LLM + Embedding) ──────────────────
+  ollama:
+    image: ollama/ollama:latest
+    profiles: ["core"]
+    container_name: ollama
+    restart: unless-stopped
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    networks:
+      - agent-net
+    # GPU support: comment out the deploy section if no GPU is available
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  # ────────────────── Ollama (CPU-only variant) ──────────────────
+  # Rename to "ollama" and remove the GPU deploy block above to use CPU.
+  # ollama-cpu:
+  #   image: ollama/ollama:latest
+  #   ...
+
+  # ────────────────── Qdrant (Vector DB) ──────────────────
+  qdrant:
+    image: qdrant/qdrant:v1.9.2
+    profiles: ["core"]
+    container_name: qdrant
+    restart: unless-stopped
+    ports:
+      - "6333:6333"   # REST API
+      - "6334:6334"   # gRPC
+    volumes:
+      - qdrant_data:/qdrant/storage
+    networks:
+      - agent-net
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:6333/healthz"]
+      interval: 10s
+      timeout: 5s
+      start_period: 10s
+      retries: 5
+
+  # ────────────────── Postgres ──────────────────
+  postgres:
+    image: postgres:16-alpine
+    profiles: ["core"]
+    container_name: postgres
+    restart: unless-stopped
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_DB: agentdb
+      POSTGRES_USER: agent
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:-agent_dev_pwd}"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      # SQL init scripts run on first start
+      - ./docker/postgres/init:/docker-entrypoint-initdb.d:ro
+    networks:
+      - agent-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U agent -d agentdb"]
+      interval: 10s
+      timeout: 5s
+      start_period: 10s
+      retries: 5
+
+  # ────────────────── Prometheus ──────────────────
+  prometheus:
+    image: prom/prometheus:v2.52.0
+    profiles: ["obs"]
+    container_name: prometheus
+    restart: unless-stopped
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./docker/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.retention.time=30d"
+      - "--web.enable-lifecycle"
+    networks:
+      - agent-net
+
+  # ────────────────── Loki ──────────────────
+  loki:
+    image: grafana/loki:3.0.0
+    profiles: ["obs"]
+    container_name: loki
+    restart: unless-stopped
+    ports:
+      - "3100:3100"
+    volumes:
+      - ./docker/loki/loki-config.yaml:/etc/loki/local-config.yaml:ro
+      - loki_data:/loki
+    command: ["-config.file=/etc/loki/local-config.yaml"]
+    networks:
+      - agent-net
+
+  # ────────────────── Grafana ──────────────────
+  grafana:
+    image: grafana/grafana:10.4.2
+    profiles: ["obs"]
+    container_name: grafana
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: "${GRAFANA_PASSWORD:-admin}"
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: "Viewer"
+    volumes:
+      - ./docker/grafana/provisioning:/etc/grafana/provisioning:ro
+      - grafana_data:/var/lib/grafana
+    depends_on:
+      - prometheus
+      - loki
+    networks:
+      - agent-net
+
+  # ────────────────── OpenTelemetry Collector ──────────────────
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.101.0
+    profiles: ["obs"]
+    container_name: otel-collector
+    restart: unless-stopped
+    ports:
+      - "4317:4317"   # gRPC OTLP
+      - "4318:4318"   # HTTP OTLP
+    volumes:
+      - ./docker/otel/otel-collector.yaml:/etc/otelcol-contrib/config.yaml:ro
+    command: ["--config", "/etc/otelcol-contrib/config.yaml"]
+    depends_on:
+      - prometheus
+      - loki
+    networks:
+      - agent-net
+
+
+# ────────────────── Volumes ──────────────────
+volumes:
+  ollama_data:
+    driver: local
+  qdrant_data:
+    driver: local
+  postgres_data:
+    driver: local
+  prometheus_data:
+    driver: local
+  loki_data:
+    driver: local
+  grafana_data:
+    driver: local
+
+
+# ────────────────── Networks ──────────────────
+networks:
+  agent-net:
+    driver: bridge
